@@ -1,0 +1,628 @@
+# Cell 1: Import and set up
+import numpy as np
+import pandas as pd
+
+from IPython.core.display import display, HTML
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import plotly.io as pio
+
+import seaborn as sns
+from importlib import reload
+import matplotlib.pyplot as plt
+import matplotlib
+import warnings
+
+# Cell 2: Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Cell 3: Read dataset
+df = pd.read_csv('/content/drive/MyDrive/UNSW_NB15_training-set.csv')
+
+# Cell 4: DataFrame info
+df.info()
+
+# Cell 5: First 10 rows
+df.head(10)
+
+# Cell 6: Describe all columns
+df.describe(include='all')
+
+# Cell 7: Drop id and attack_cat
+list_drop = ['id','attack_cat']
+df.drop(list_drop,axis=1,inplace=True)
+
+# Cell 8: Describe numeric columns after dropping
+df_numeric = df.select_dtypes(include=[np.number])
+df_numeric.describe(include='all')
+
+# Cell 9: Clamp extreme values
+DEBUG = 0
+
+for feature in df_numeric.columns:
+    if DEBUG == 1:
+        print(feature)
+        print('max = '+str(df_numeric[feature].max()))
+        print('75th = '+str(df_numeric[feature].quantile(0.95)))
+        print('median = '+str(df_numeric[feature].median()))
+        print(df_numeric[feature].max()>10*df_numeric[feature].median())
+        print('----------------------------------------------------')
+    if df_numeric[feature].max()>10*df_numeric[feature].median() and df_numeric[feature].max()>10 :
+        df[feature] = np.where(df[feature]<df[feature].quantile(0.95), df[feature], df[feature].quantile(0.95))
+
+# Cell 10: Describe numeric after clamping
+df_numeric = df.select_dtypes(include=[np.number])
+df_numeric.describe(include='all')
+
+# Cell 11: Apply log transform to numeric features with >50 unique values
+df_numeric = df.select_dtypes(include=[np.number])
+df_before = df_numeric.copy()
+DEBUG = 0
+for feature in df_numeric.columns:
+    if DEBUG == 1:
+        print(feature)
+        print('nunique = '+str(df_numeric[feature].nunique()))
+        print(df_numeric[feature].nunique()>50)
+        print('----------------------------------------------------')
+    if df_numeric[feature].nunique()>50:
+        if df_numeric[feature].min()==0:
+            df[feature] = np.log(df[feature]+1)
+        else:
+            df[feature] = np.log(df[feature])
+
+df_numeric = df.select_dtypes(include=[np.number])
+
+# Cell 12: Categorical describe before reduction
+df_cat = df.select_dtypes(exclude=[np.number])
+df_cat.describe(include='all')
+
+# Cell 13: Reduce cardinality of categorical features
+DEBUG = 0
+for feature in df_cat.columns:
+    if DEBUG == 1:
+        print(feature)
+        print('nunique = '+str(df_cat[feature].nunique()))
+        print(df_cat[feature].nunique()>6)
+        print(sum(df[feature].isin(df[feature].value_counts().head().index)))
+        print('----------------------------------------------------')
+
+    if df_cat[feature].nunique()>6:
+        df[feature] = np.where(df[feature].isin(df[feature].value_counts().head().index), df[feature], '-')
+
+# Cell 14: Categorical describe after reduction
+df_cat = df.select_dtypes(exclude=[np.number])
+df_cat.describe(include='all')
+
+# Cell 15: Value counts of proto (for inspection)
+df['proto'].value_counts().head().index
+
+# Cell 16: All proto values
+df['proto'].value_counts().index
+
+# Cell 17: Split X and y
+X = df.iloc[:,:-1]
+y = df.iloc[:,-1]
+
+# Cell 18: Check shape and feature names
+X.head()
+feature_names = list(X.columns)
+np.shape(X)
+
+# Cell 19: One‑hot encoding
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+ct = ColumnTransformer(transformers=[('encoder', OneHotEncoder(), [1,2,3])], remainder='passthrough')
+X = np.array(ct.fit_transform(X))
+
+# Cell 20: New shape
+np.shape(X)
+
+# Cell 21: Categorical describe again (after encoding, but unchanged for display)
+df_cat.describe(include='all')
+
+# Cell 22: First encoded row
+X[0]
+
+# Cell 23: Number of original feature names
+len(feature_names)
+
+# Cell 24: Build full feature names (for one‑hot columns)
+for label in list(df_cat['state'].value_counts().index)[::-1][1:]:
+    feature_names.insert(0,label)
+
+for label in list(df_cat['service'].value_counts().index)[::-1][1:]:
+    feature_names.insert(0,label)
+
+for label in list(df_cat['proto'].value_counts().index)[::-1][1:]:
+    feature_names.insert(0,label)
+
+# Cell 25: Number of features after one‑hot
+len(feature_names)
+
+# Cell 26: Train‑test split
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(X, y,
+                                                    test_size = 0.1,
+                                                    random_state = 53,
+                                                    stratify=y)
+
+# Cell 27: Standardize continuous features (first 18 columns are dummy, rest are numeric)
+from sklearn.preprocessing import StandardScaler
+sc = StandardScaler()
+X_train[:, 18:] = sc.fit_transform(X_train[:, 18:])
+X_test[:, 18:] = sc.transform(X_test[:, 18:])
+
+# Cell 28: Import metrics and prepare performance DataFrame
+from sklearn.metrics import (
+    f1_score, precision_score, recall_score, accuracy_score,
+    confusion_matrix, roc_auc_score, matthews_corrcoef,
+    cohen_kappa_score, classification_report
+)
+import time
+model_performance = pd.DataFrame(columns=[
+    'Accuracy','Recall','Precision','F1-Score',
+    'ROC-AUC','MCC','Cohen Kappa',
+    'time to train','time to predict','total time'
+])
+
+# Cell 29: Logistic Regression
+%%time
+from sklearn.linear_model import LogisticRegression
+start = time.time()
+model = LogisticRegression().fit(X_train,y_train)
+end_train = time.time()
+y_predictions = model.predict(X_test)
+end_predict = time.time()
+
+accuracy  = accuracy_score(y_test, y_predictions)
+recall    = recall_score(y_test, y_predictions, average='weighted')
+precision = precision_score(y_test, y_predictions, average='weighted')
+f1s       = f1_score(y_test, y_predictions, average='weighted')
+roc_auc   = roc_auc_score(y_test, y_predictions)
+mcc       = matthews_corrcoef(y_test, y_predictions)
+kappa     = cohen_kappa_score(y_test, y_predictions)
+
+print('Accuracy:    ' + '{:.2%}'.format(accuracy))
+print('Recall:      ' + '{:.2%}'.format(recall))
+print('Precision:   ' + '{:.2%}'.format(precision))
+print('F1-Score:    ' + '{:.2%}'.format(f1s))
+print('ROC-AUC:     ' + '{:.4f}'.format(roc_auc))
+print('MCC:         ' + '{:.4f}'.format(mcc))
+print('Cohen Kappa: ' + '{:.4f}'.format(kappa))
+print('time to train:   ' + '{:.2f}'.format(end_train-start) + ' s')
+print('time to predict: ' + '{:.2f}'.format(end_predict-end_train) + ' s')
+print('total:           ' + '{:.2f}'.format(end_predict-start) + ' s')
+print()
+print('Classification Report:')
+print(classification_report(y_test, y_predictions, target_names=['Normal','Attack']))
+model_performance.loc['Logistic'] = [
+    accuracy, recall, precision, f1s,
+    roc_auc, mcc, kappa,
+    end_train-start, end_predict-end_train, end_predict-start
+]
+
+# Cell 30: Logistic Regression confusion matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
+
+plt.rcParams['figure.figsize'] = (5, 5)
+sns.set_style('white')
+
+cm = confusion_matrix(y_test, model.predict(X_test))
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+disp.plot(cmap=plt.cm.YlOrRd, ax=ax, colorbar=True)
+ax.set_title('Confusion Matrix - Logistic', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Cell 31: kNN
+%%time
+from sklearn.neighbors import KNeighborsClassifier
+start = time.time()
+model = KNeighborsClassifier(n_neighbors=9).fit(X_train,y_train)
+end_train = time.time()
+y_predictions = model.predict(X_test)
+end_predict = time.time()
+
+accuracy  = accuracy_score(y_test, y_predictions)
+recall    = recall_score(y_test, y_predictions, average='weighted')
+precision = precision_score(y_test, y_predictions, average='weighted')
+f1s       = f1_score(y_test, y_predictions, average='weighted')
+roc_auc   = roc_auc_score(y_test, y_predictions)
+mcc       = matthews_corrcoef(y_test, y_predictions)
+kappa     = cohen_kappa_score(y_test, y_predictions)
+
+print('Accuracy:    ' + '{:.2%}'.format(accuracy))
+print('Recall:      ' + '{:.2%}'.format(recall))
+print('Precision:   ' + '{:.2%}'.format(precision))
+print('F1-Score:    ' + '{:.2%}'.format(f1s))
+print('ROC-AUC:     ' + '{:.4f}'.format(roc_auc))
+print('MCC:         ' + '{:.4f}'.format(mcc))
+print('Cohen Kappa: ' + '{:.4f}'.format(kappa))
+print('time to train:   ' + '{:.2f}'.format(end_train-start) + ' s')
+print('time to predict: ' + '{:.2f}'.format(end_predict-end_train) + ' s')
+print('total:           ' + '{:.2f}'.format(end_predict-start) + ' s')
+print()
+print('Classification Report:')
+print(classification_report(y_test, y_predictions, target_names=['Normal','Attack']))
+model_performance.loc['kNN'] = [
+    accuracy, recall, precision, f1s,
+    roc_auc, mcc, kappa,
+    end_train-start, end_predict-end_train, end_predict-start
+]
+
+# Cell 32: kNN confusion matrix
+cm = confusion_matrix(y_test, model.predict(X_test))
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+disp.plot(cmap=plt.cm.YlOrRd, ax=ax, colorbar=True)
+ax.set_title('Confusion Matrix - kNN', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Cell 33: Decision Tree
+%%time
+from sklearn.tree import DecisionTreeClassifier
+start = time.time()
+model = DecisionTreeClassifier().fit(X_train,y_train)
+end_train = time.time()
+y_predictions = model.predict(X_test)
+end_predict = time.time()
+
+accuracy  = accuracy_score(y_test, y_predictions)
+recall    = recall_score(y_test, y_predictions, average='weighted')
+precision = precision_score(y_test, y_predictions, average='weighted')
+f1s       = f1_score(y_test, y_predictions, average='weighted')
+roc_auc   = roc_auc_score(y_test, y_predictions)
+mcc       = matthews_corrcoef(y_test, y_predictions)
+kappa     = cohen_kappa_score(y_test, y_predictions)
+
+print('Accuracy:    ' + '{:.2%}'.format(accuracy))
+print('Recall:      ' + '{:.2%}'.format(recall))
+print('Precision:   ' + '{:.2%}'.format(precision))
+print('F1-Score:    ' + '{:.2%}'.format(f1s))
+print('ROC-AUC:     ' + '{:.4f}'.format(roc_auc))
+print('MCC:         ' + '{:.4f}'.format(mcc))
+print('Cohen Kappa: ' + '{:.4f}'.format(kappa))
+print('time to train:   ' + '{:.2f}'.format(end_train-start) + ' s')
+print('time to predict: ' + '{:.2f}'.format(end_predict-end_train) + ' s')
+print('total:           ' + '{:.2f}'.format(end_predict-start) + ' s')
+print()
+print('Classification Report:')
+print(classification_report(y_test, y_predictions, target_names=['Normal','Attack']))
+model_performance.loc['Decision Tree'] = [
+    accuracy, recall, precision, f1s,
+    roc_auc, mcc, kappa,
+    end_train-start, end_predict-end_train, end_predict-start
+]
+
+# Cell 34: Decision Tree confusion matrix
+cm = confusion_matrix(y_test, model.predict(X_test))
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+disp.plot(cmap=plt.cm.YlOrRd, ax=ax, colorbar=True)
+ax.set_title('Confusion Matrix - Decision Tree', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Cell 35: Random Forest
+%%time
+from sklearn.ensemble import RandomForestClassifier
+start = time.time()
+model = RandomForestClassifier(n_estimators = 600,n_jobs=-1,random_state=42,bootstrap=True,).fit(X_train,y_train)
+end_train = time.time()
+y_predictions = model.predict(X_test)
+end_predict = time.time()
+
+accuracy  = accuracy_score(y_test, y_predictions)
+recall    = recall_score(y_test, y_predictions, average='weighted')
+precision = precision_score(y_test, y_predictions, average='weighted')
+f1s       = f1_score(y_test, y_predictions, average='weighted')
+roc_auc   = roc_auc_score(y_test, y_predictions)
+mcc       = matthews_corrcoef(y_test, y_predictions)
+kappa     = cohen_kappa_score(y_test, y_predictions)
+
+print('Accuracy:    ' + '{:.2%}'.format(accuracy))
+print('Recall:      ' + '{:.2%}'.format(recall))
+print('Precision:   ' + '{:.2%}'.format(precision))
+print('F1-Score:    ' + '{:.2%}'.format(f1s))
+print('ROC-AUC:     ' + '{:.4f}'.format(roc_auc))
+print('MCC:         ' + '{:.4f}'.format(mcc))
+print('Cohen Kappa: ' + '{:.4f}'.format(kappa))
+print('time to train:   ' + '{:.2f}'.format(end_train-start) + ' s')
+print('time to predict: ' + '{:.2f}'.format(end_predict-end_train) + ' s')
+print('total:           ' + '{:.2f}'.format(end_predict-start) + ' s')
+print()
+print('Classification Report:')
+print(classification_report(y_test, y_predictions, target_names=['Normal','Attack']))
+model_performance.loc['Random Forest'] = [
+    accuracy, recall, precision, f1s,
+    roc_auc, mcc, kappa,
+    end_train-start, end_predict-end_train, end_predict-start
+]
+
+# Cell 36: Random Forest confusion matrix
+cm = confusion_matrix(y_test, model.predict(X_test))
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+disp.plot(cmap=plt.cm.YlOrRd, ax=ax, colorbar=True)
+ax.set_title('Confusion Matrix - Random Forest', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Cell 37: Gradient Boosting Classifier
+%%time
+from sklearn.ensemble import GradientBoostingClassifier
+start = time.time()
+model = GradientBoostingClassifier().fit(X_train,y_train)
+end_train = time.time()
+y_predictions = model.predict(X_test)
+end_predict = time.time()
+
+accuracy  = accuracy_score(y_test, y_predictions)
+recall    = recall_score(y_test, y_predictions, average='weighted')
+precision = precision_score(y_test, y_predictions, average='weighted')
+f1s       = f1_score(y_test, y_predictions, average='weighted')
+roc_auc   = roc_auc_score(y_test, y_predictions)
+mcc       = matthews_corrcoef(y_test, y_predictions)
+kappa     = cohen_kappa_score(y_test, y_predictions)
+
+print('Accuracy:    ' + '{:.2%}'.format(accuracy))
+print('Recall:      ' + '{:.2%}'.format(recall))
+print('Precision:   ' + '{:.2%}'.format(precision))
+print('F1-Score:    ' + '{:.2%}'.format(f1s))
+print('ROC-AUC:     ' + '{:.4f}'.format(roc_auc))
+print('MCC:         ' + '{:.4f}'.format(mcc))
+print('Cohen Kappa: ' + '{:.4f}'.format(kappa))
+print('time to train:   ' + '{:.2f}'.format(end_train-start) + ' s')
+print('time to predict: ' + '{:.2f}'.format(end_predict-end_train) + ' s')
+print('total:           ' + '{:.2f}'.format(end_predict-start) + ' s')
+print()
+print('Classification Report:')
+print(classification_report(y_test, y_predictions, target_names=['Normal','Attack']))
+model_performance.loc['Gradient Boosting Classifier'] = [
+    accuracy, recall, precision, f1s,
+    roc_auc, mcc, kappa,
+    end_train-start, end_predict-end_train, end_predict-start
+]
+
+# Cell 38: Gradient Boosting confusion matrix
+cm = confusion_matrix(y_test, model.predict(X_test))
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+disp.plot(cmap=plt.cm.YlOrRd, ax=ax, colorbar=True)
+ax.set_title('Confusion Matrix - Gradient Boosting Classifier', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Cell 39: Neural Network MLP
+%%time
+from sklearn.neural_network import MLPClassifier
+start = time.time()
+model = MLPClassifier(hidden_layer_sizes = (20,20,),
+                      activation='relu',
+                      solver='adam',
+                      batch_size=1000,
+                      verbose=0).fit(X_train,y_train)
+end_train = time.time()
+y_predictions = model.predict(X_test)
+end_predict = time.time()
+
+accuracy  = accuracy_score(y_test, y_predictions)
+recall    = recall_score(y_test, y_predictions, average='weighted')
+precision = precision_score(y_test, y_predictions, average='weighted')
+f1s       = f1_score(y_test, y_predictions, average='weighted')
+roc_auc   = roc_auc_score(y_test, y_predictions)
+mcc       = matthews_corrcoef(y_test, y_predictions)
+kappa     = cohen_kappa_score(y_test, y_predictions)
+
+print('Accuracy:    ' + '{:.2%}'.format(accuracy))
+print('Recall:      ' + '{:.2%}'.format(recall))
+print('Precision:   ' + '{:.2%}'.format(precision))
+print('F1-Score:    ' + '{:.2%}'.format(f1s))
+print('ROC-AUC:     ' + '{:.4f}'.format(roc_auc))
+print('MCC:         ' + '{:.4f}'.format(mcc))
+print('Cohen Kappa: ' + '{:.4f}'.format(kappa))
+print('time to train:   ' + '{:.2f}'.format(end_train-start) + ' s')
+print('time to predict: ' + '{:.2f}'.format(end_predict-end_train) + ' s')
+print('total:           ' + '{:.2f}'.format(end_predict-start) + ' s')
+print()
+print('Classification Report:')
+print(classification_report(y_test, y_predictions, target_names=['Normal','Attack']))
+model_performance.loc['MLP'] = [
+    accuracy, recall, precision, f1s,
+    roc_auc, mcc, kappa,
+    end_train-start, end_predict-end_train, end_predict-start
+]
+
+# Cell 40: MLP confusion matrix
+cm = confusion_matrix(y_test, model.predict(X_test))
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+disp.plot(cmap=plt.cm.YlOrRd, ax=ax, colorbar=True)
+ax.set_title('Confusion Matrix - MLP', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Cell 41: Support Vector Machine (SVM)
+%%time
+from sklearn.svm import SVC
+start = time.time()
+model = SVC(kernel='rbf', C=1.0, gamma='scale', random_state=42, probability=True)
+model.fit(X_train, y_train)
+end_train = time.time()
+y_predictions = model.predict(X_test)
+end_predict = time.time()
+
+accuracy  = accuracy_score(y_test, y_predictions)
+recall    = recall_score(y_test, y_predictions, average='weighted')
+precision = precision_score(y_test, y_predictions, average='weighted')
+f1s       = f1_score(y_test, y_predictions, average='weighted')
+roc_auc   = roc_auc_score(y_test, y_predictions)
+mcc       = matthews_corrcoef(y_test, y_predictions)
+kappa     = cohen_kappa_score(y_test, y_predictions)
+
+print('Accuracy:    ' + '{:.2%}'.format(accuracy))
+print('Recall:      ' + '{:.2%}'.format(recall))
+print('Precision:   ' + '{:.2%}'.format(precision))
+print('F1-Score:    ' + '{:.2%}'.format(f1s))
+print('ROC-AUC:     ' + '{:.4f}'.format(roc_auc))
+print('MCC:         ' + '{:.4f}'.format(mcc))
+print('Cohen Kappa: ' + '{:.4f}'.format(kappa))
+print('time to train:   ' + '{:.2f}'.format(end_train-start) + ' s')
+print('time to predict: ' + '{:.2f}'.format(end_predict-end_train) + ' s')
+print('total:           ' + '{:.2f}'.format(end_predict-start) + ' s')
+print()
+print('Classification Report:')
+print(classification_report(y_test, y_predictions, target_names=['Normal','Attack']))
+model_performance.loc['SVM'] = [
+    accuracy, recall, precision, f1s,
+    roc_auc, mcc, kappa,
+    end_train-start, end_predict-end_train, end_predict-start
+]
+
+# Cell 42: SVM confusion matrix
+cm = confusion_matrix(y_test, model.predict(X_test))
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+disp.plot(cmap=plt.cm.YlOrRd, ax=ax, colorbar=True)
+ax.set_title('Confusion Matrix - SVM', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Cell 43: XGBoost Classifier
+# Install xgboost if not already installed
+# !pip install xgboost -q
+%%time
+from xgboost import XGBClassifier
+start = time.time()
+model = XGBClassifier(n_estimators=300, learning_rate=0.1, max_depth=6,
+                      use_label_encoder=False, eval_metric='logloss',
+                      n_jobs=-1, random_state=42)
+model.fit(X_train, y_train)
+end_train = time.time()
+y_predictions = model.predict(X_test)
+end_predict = time.time()
+
+accuracy  = accuracy_score(y_test, y_predictions)
+recall    = recall_score(y_test, y_predictions, average='weighted')
+precision = precision_score(y_test, y_predictions, average='weighted')
+f1s       = f1_score(y_test, y_predictions, average='weighted')
+roc_auc   = roc_auc_score(y_test, y_predictions)
+mcc       = matthews_corrcoef(y_test, y_predictions)
+kappa     = cohen_kappa_score(y_test, y_predictions)
+
+print('Accuracy:    ' + '{:.2%}'.format(accuracy))
+print('Recall:      ' + '{:.2%}'.format(recall))
+print('Precision:   ' + '{:.2%}'.format(precision))
+print('F1-Score:    ' + '{:.2%}'.format(f1s))
+print('ROC-AUC:     ' + '{:.4f}'.format(roc_auc))
+print('MCC:         ' + '{:.4f}'.format(mcc))
+print('Cohen Kappa: ' + '{:.4f}'.format(kappa))
+print('time to train:   ' + '{:.2f}'.format(end_train-start) + ' s')
+print('time to predict: ' + '{:.2f}'.format(end_predict-end_train) + ' s')
+print('total:           ' + '{:.2f}'.format(end_predict-start) + ' s')
+print()
+print('Classification Report:')
+print(classification_report(y_test, y_predictions, target_names=['Normal','Attack']))
+model_performance.loc['XGBoost'] = [
+    accuracy, recall, precision, f1s,
+    roc_auc, mcc, kappa,
+    end_train-start, end_predict-end_train, end_predict-start
+]
+
+# Cell 44: XGBoost confusion matrix
+cm = confusion_matrix(y_test, model.predict(X_test))
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Attack'])
+disp.plot(cmap=plt.cm.YlOrRd, ax=ax, colorbar=True)
+ax.set_title('Confusion Matrix - XGBoost', fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Cell 45: Summary Table & Visualizations
+styled = model_performance.style \
+    .background_gradient(cmap='YlOrRd', subset=['Accuracy','Recall','Precision','F1-Score','ROC-AUC','MCC','Cohen Kappa']) \
+    .background_gradient(cmap='Blues_r', subset=['time to train','time to predict','total time']) \
+    .format({
+        'Accuracy':       '{:.4%}',
+        'Precision':      '{:.4%}',
+        'Recall':         '{:.4%}',
+        'F1-Score':       '{:.4%}',
+        'ROC-AUC':        '{:.4f}',
+        'MCC':            '{:.4f}',
+        'Cohen Kappa':    '{:.4f}',
+        'time to train':  '{:.4f}',
+        'time to predict':'{:.4f}',
+        'total time':     '{:.4f}',
+    })
+display(styled)
+
+# Bar chart comparison
+import matplotlib.pyplot as plt
+import numpy as np
+
+metrics_to_plot = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'ROC-AUC']
+models = model_performance.index.tolist()
+x = np.arange(len(models))
+width = 0.15
+colors = ['#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00']
+
+fig, ax = plt.subplots(figsize=(14, 6))
+for i, (metric, color) in enumerate(zip(metrics_to_plot, colors)):
+    vals = model_performance[metric].astype(float).values
+    bars = ax.bar(x + i*width, vals, width, label=metric, color=color, alpha=0.85, edgecolor='white')
+
+ax.set_xlabel('Model', fontsize=12)
+ax.set_ylabel('Score', fontsize=12)
+ax.set_title('Model Performance Comparison', fontsize=14, fontweight='bold')
+ax.set_xticks(x + width*2)
+ax.set_xticklabels(models, rotation=20, ha='right', fontsize=10)
+ax.set_ylim(0, 1.05)
+ax.legend(loc='lower right', fontsize=10)
+ax.yaxis.grid(True, linestyle='--', alpha=0.7)
+ax.set_axisbelow(True)
+plt.tight_layout()
+plt.show()
+
+# MCC & Cohen Kappa comparison
+fig2, axes = plt.subplots(1, 2, figsize=(12, 5))
+for ax2, metric, color in zip(axes, ['MCC','Cohen Kappa'], ['#e67e22','#2980b9']):
+    vals = model_performance[metric].astype(float).values
+    bars = ax2.bar(models, vals, color=color, alpha=0.85, edgecolor='white')
+    ax2.set_title(metric, fontsize=13, fontweight='bold')
+    ax2.set_xticklabels(models, rotation=25, ha='right', fontsize=9)
+    ax2.set_ylim(0, 1.0)
+    ax2.yaxis.grid(True, linestyle='--', alpha=0.6)
+    ax2.set_axisbelow(True)
+    for bar, v in zip(bars, vals):
+        ax2.text(bar.get_x()+bar.get_width()/2, v+0.01, f'{v:.3f}', ha='center', va='bottom', fontsize=8)
+plt.suptitle('Advanced Metrics Comparison', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# Training Time comparison
+fig3, ax3 = plt.subplots(figsize=(10, 4))
+train_times = model_performance['time to train'].astype(float).values
+bars = ax3.barh(models, train_times, color='#c0392b', alpha=0.8, edgecolor='white')
+ax3.set_xlabel('Seconds', fontsize=11)
+ax3.set_title('Training Time per Model', fontsize=13, fontweight='bold')
+for bar, v in zip(bars, train_times):
+    ax3.text(v + max(train_times)*0.01, bar.get_y()+bar.get_height()/2,
+             f'{v:.2f}s', va='center', fontsize=9)
+ax3.xaxis.grid(True, linestyle='--', alpha=0.6)
+ax3.set_axisbelow(True)
+plt.tight_layout()
+plt.show()
